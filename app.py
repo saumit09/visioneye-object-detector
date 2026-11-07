@@ -42,7 +42,7 @@ def startup_event():
     print("Detector ready for inference.")
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def read_root():
     index_file = FRONTEND_DIR / "index.html"
     if index_file.exists():
