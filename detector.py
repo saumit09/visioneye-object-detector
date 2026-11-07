@@ -154,6 +154,7 @@ class ObjectDetector:
                 
                 detections.append({
                     "class": label,
+                    "class_name": label,
                     "confidence": round(conf, 3),
                     "bbox": [bx1, by1, bx2, by2],
                     "class_id": cid,

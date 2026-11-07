@@ -72,10 +72,10 @@ class DetectionTracker:
 
     def __init__(
         self,
-        iou_threshold: float = 0.25,
-        bbox_smoothing: float = 0.55,
-        conf_smoothing: float = 0.45,
-        min_hits_to_confirm: int = 3,
+        iou_threshold: float = 0.20,
+        bbox_smoothing: float = 0.45,
+        conf_smoothing: float = 0.35,
+        min_hits_to_confirm: int = 1,
         max_misses: int = 8,
     ):
         self.iou_threshold = iou_threshold
@@ -187,6 +187,7 @@ class DetectionTracker:
 
             stabilized.append({
                 "class": track.class_name,
+                "class_name": track.class_name,
                 "confidence": round(track.smoothed_conf, 3),
                 "bbox": [int(round(v)) for v in track.smoothed_bbox],
                 "class_id": track.class_id,

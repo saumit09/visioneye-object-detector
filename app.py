@@ -140,10 +140,10 @@ async def websocket_detect(websocket: WebSocket):
     await websocket.accept()
 
     tracker = DetectionTracker(
-        iou_threshold=0.25,
-        bbox_smoothing=0.55,
-        conf_smoothing=0.45,
-        min_hits_to_confirm=3,
+        iou_threshold=0.20,
+        bbox_smoothing=0.45,
+        conf_smoothing=0.35,
+        min_hits_to_confirm=1,
         max_misses=8,
     )
 
@@ -151,7 +151,7 @@ async def websocket_detect(websocket: WebSocket):
         while True:
             data = await websocket.receive_json()
             raw_b64 = data.get("image", "")
-            conf_thresh = float(data.get("conf_threshold", 0.35))
+            conf_thresh = float(data.get("conf_threshold", 0.25))
             iou_thresh = float(data.get("iou_threshold", 0.45))
 
             if not raw_b64:
@@ -175,7 +175,7 @@ async def websocket_detect(websocket: WebSocket):
             t0 = time.perf_counter()
             raw_detections = detector.detect(
                 frame,
-                conf_threshold=max(0.15, conf_thresh - 0.10),
+                conf_threshold=max(0.12, conf_thresh - 0.08),
                 iou_threshold=iou_thresh
             )
             stabilized = tracker.update(raw_detections)

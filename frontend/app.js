@@ -74,7 +74,7 @@ let currentStream = null;
 let isDetecting = true;
 let isMirrored = true;
 let currentFacingMode = "user"; // "user" (front) or "environment" (rear)
-let confidenceThreshold = 0.35;
+let confidenceThreshold = 0.25;
 let publicTunnelUrl = null;
 
 // FPS tracking
@@ -122,6 +122,9 @@ const CLASS_COLORS = [
 ];
 
 function getColorForClass(className, classId = 0) {
+  if (!className || typeof className !== "string") {
+    className = "object";
+  }
   let hash = 0;
   for (let i = 0; i < className.length; i++) {
     hash = (hash << 5) - hash + className.charCodeAt(i);
@@ -373,6 +376,10 @@ async function runClientInferenceLoop() {
 
 function scheduleNextCapture() {
   if (useClientModel) return;
+  // Network safeguard: Reset awaitingResponse if stalled for more than 2.0s
+  if (awaitingResponse && (performance.now() - sendStartTime > 2000)) {
+    awaitingResponse = false;
+  }
   if (isDetecting && !awaitingResponse) {
     requestAnimationFrame(captureAndSendFrame);
   }
@@ -419,30 +426,49 @@ function handleServerDetections(data) {
   const serverDetections = data.detections || [];
   const seenTrackIds = new Set();
 
-  for (const det of serverDetections) {
-    const tid = det.track_id;
+  // Screen scale factor: Map frame coords (e.g. 640x360) to full canvas resolution
+  const frameW = data.frame_width || video.videoWidth || 640;
+  const frameH = data.frame_height || video.videoHeight || 480;
+  const scaleX = (canvas.width && frameW) ? (canvas.width / frameW) : 1.0;
+  const scaleY = (canvas.height && frameH) ? (canvas.height / frameH) : 1.0;
+
+  for (let i = 0; i < serverDetections.length; i++) {
+    const det = serverDetections[i];
+    const tid = det.track_id !== undefined ? det.track_id : (i + 1);
     seenTrackIds.add(tid);
 
-    const normBbox = normalizeBbox(det.bbox);
+    const name = det.class_name || det.class || "object";
+    const cid = det.class_id !== undefined ? det.class_id : 0;
+    const conf = det.confidence !== undefined ? det.confidence : 0.5;
+
+    // Scale bbox from sent frame dimensions to actual canvas dimensions
+    const rawBbox = det.bbox || [0, 0, 0, 0];
+    const scaledBbox = [
+      rawBbox[0] * scaleX,
+      rawBbox[1] * scaleY,
+      rawBbox[2] * scaleX,
+      rawBbox[3] * scaleY
+    ];
+    const normBbox = normalizeBbox(scaledBbox);
 
     if (trackedBoxes.has(tid)) {
       const existing = trackedBoxes.get(tid);
       existing.prevBbox = [...existing.displayBbox];
       existing.targetBbox = normBbox;
-      existing.confidence = det.confidence;
-      existing.className = det.class_name;
-      existing.classId = det.class_id;
+      existing.confidence = conf;
+      existing.className = name;
+      existing.classId = cid;
       existing.missing = false;
       existing.missingFrames = 0;
     } else {
       trackedBoxes.set(tid, {
         track_id: tid,
-        className: det.class_name,
-        classId: det.class_id,
+        className: name,
+        classId: cid,
         prevBbox: [...normBbox],
         targetBbox: [...normBbox],
         displayBbox: [...normBbox],
-        confidence: det.confidence,
+        confidence: conf,
         missing: false,
         missingFrames: 0
       });
@@ -478,25 +504,29 @@ function normalizeBbox(bbox) {
 // ─── 4. 60 FPS Render & Lerp Loop ───────────────────────────────────────────
 
 function renderLoop() {
-  calculateFPS();
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  try {
+    calculateFPS();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  let activeCount = 0;
+    let activeCount = 0;
 
-  for (const [_, tb] of trackedBoxes.entries()) {
-    // Lerp bbox toward target
-    for (let i = 0; i < 4; i++) {
-      tb.displayBbox[i] += (tb.targetBbox[i] - tb.displayBbox[i]) * LERP_FACTOR;
+    for (const [_, tb] of trackedBoxes.entries()) {
+      // Lerp bbox toward target
+      for (let i = 0; i < 4; i++) {
+        tb.displayBbox[i] += (tb.targetBbox[i] - tb.displayBbox[i]) * LERP_FACTOR;
+      }
+
+      const alpha = tb.missing ? Math.max(0, 1 - (tb.missingFrames / MAX_MISSING_FRAMES)) : 1.0;
+      if (alpha <= 0.05) continue;
+
+      activeCount++;
+      drawBoundingBox(tb, alpha);
     }
 
-    const alpha = tb.missing ? Math.max(0, 1 - (tb.missingFrames / MAX_MISSING_FRAMES)) : 1.0;
-    if (alpha <= 0.05) continue;
-
-    activeCount++;
-    drawBoundingBox(tb, alpha);
+    objCountVal.textContent = activeCount;
+  } catch (err) {
+    console.error("renderLoop caught error:", err);
   }
-
-  objCountVal.textContent = activeCount;
   requestAnimationFrame(renderLoop);
 }
 
@@ -518,7 +548,7 @@ function drawBoundingBox(tb, alpha = 1.0) {
 
   // Label tag
   ctx.shadowBlur = 0;
-  const label = `${tb.className} ${Math.round(tb.confidence * 100)}%`;
+  const label = `${tb.className || "object"} ${Math.round((tb.confidence || 0) * 100)}%`;
   ctx.font = "bold 13px 'Plus Jakarta Sans', sans-serif";
   const textWidth = ctx.measureText(label).width;
   const tagH = 22;
@@ -529,7 +559,17 @@ function drawBoundingBox(tb, alpha = 1.0) {
   ctx.fillRect(x1, tagY, tagW, tagH);
 
   ctx.fillStyle = "#ffffff";
-  ctx.fillText(label, x1 + 7, tagY + 15);
+  if (isMirrored) {
+    // If canvas is CSS mirrored, reverse mirror for label text so text reads normally
+    ctx.save();
+    ctx.translate(x1 + tagW / 2, tagY + tagH / 2);
+    ctx.scale(-1, 1);
+    ctx.translate(-(x1 + tagW / 2), -(tagY + tagH / 2));
+    ctx.fillText(label, x1 + 7, tagY + 15);
+    ctx.restore();
+  } else {
+    ctx.fillText(label, x1 + 7, tagY + 15);
+  }
 
   ctx.restore();
 }
